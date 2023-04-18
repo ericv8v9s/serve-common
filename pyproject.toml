@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serve-common"
-version = "0"
+version = "0.0.1"
 requires-python = ">=3.10"
 
 dependencies = [
 	"falcon==3.1.1",
 	"tomli==2.0.1 ; python_version < '3.11'",
 	"loguru==0.7.0",
-	"inotify==0.2.10",
 	"spectree==1.1.0",
 	"pydantic==1.10.7"
 ]
