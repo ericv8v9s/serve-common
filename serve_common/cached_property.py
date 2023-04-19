@@ -1,9 +1,5 @@
-from typing import Union, Callable
-
-import functools
 import inspect
-from collections import defaultdict
-
+from typing import Union
 
 __all__ = [
     "cached",

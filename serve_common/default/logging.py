@@ -1,5 +1,7 @@
 import sys
+import os
 from loguru import logger
+from serve_common import request_id
 from serve_common.config import config
 from serve_common.log_util import *
 
@@ -44,7 +46,7 @@ def add_output_stderr():
 def add_output_file(filename="app.log"):
     log_dir = config.get("logging.logs_dir", default="logs")
     os.makedirs(log_dir, mode=0o700, exist_ok=True)
-    logger.add(log_dir + "/{filename}",
+    logger.add(f"{log_dir}/{filename}",
         level=0,
         format=format_msg,
         filter=llfilter,
