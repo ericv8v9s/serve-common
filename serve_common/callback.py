@@ -101,4 +101,7 @@ class _CallbackLoop(threading.Thread):
             if event in _callbacks:
                 cbs = _callbacks[event]
                 for cb in cbs:
-                    cb(event, *args)
+                    try:
+                        cb(event, *args)
+                    except Exception:
+                        pass

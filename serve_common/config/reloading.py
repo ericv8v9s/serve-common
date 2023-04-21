@@ -11,13 +11,13 @@ from loguru import logger
 
 
 has_inotify = False
-if sys.platform.startswith('linux'):
-    try:
-        from inotify.adapters import Inotify
-        import inotify.constants
-        has_inotify = True
-    except ImportError:
-        pass
+#if sys.platform.startswith('linux'):
+#    try:
+#        from inotify.adapters import Inotify
+#        import inotify.constants
+#        has_inotify = True
+#    except ImportError:
+#        pass
 
 
 CONFIG_FILE = "config.toml"
