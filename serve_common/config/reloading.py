@@ -79,6 +79,7 @@ else:
 
                 if mtime is None:
                     continue
+                logger.trace(f"{CONFIG_FILE} mtime={mtime}")
                 if old_mtime is None or old_mtime < mtime:
                     self.reload_func()
                 old_mtime = mtime
