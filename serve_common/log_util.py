@@ -23,7 +23,7 @@ class LogLevelFilter:
         def change_log_level(_, old_level, new_level):
             logger.info(f"setting log level to [{new_level}]")
             self.level = new_level
-        callback.register("logging.level", change_log_level)
+        callback.register("config:logging.level", change_log_level)
 
     @property
     def level(self):
