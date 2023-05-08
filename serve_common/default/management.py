@@ -4,10 +4,11 @@ from pydantic import BaseModel as Schema
 from pydantic import Field
 from loguru import logger
 
-from serve_common.export import *
 from serve_common.spec import spec
 from serve_common.config import config
-from serve_common import versionhash
+
+
+version = "0.0.1"
 
 
 def route(app: falcon.App):
@@ -16,8 +17,8 @@ def route(app: falcon.App):
     app.add_route("/", openapi_spec)
     app.add_route("/manage/spec", openapi_spec)
 
-    version_hash = VersionHash()
-    app.add_route("/manage/hash", version_hash)
+    ver_res = Version()
+    app.add_route("/manage/version", ver_res)
 
     log_level_config = LogLevel()
     app.add_route("/manage/logging/level", log_level_config)
@@ -29,7 +30,6 @@ management_tag = spectree.Tag(
 )
 
 
-@export
 class OpenAPISpec:
     class OpenAPISpecJson(Schema):
         """Open API specification for this service in JSON format."""
@@ -44,20 +44,14 @@ class OpenAPISpec:
         resp.media = spec.spec
 
 
-@export
-class VersionHash:
-    class VersionHashResp(Schema):
-        sha256: str
-
+class Version:
     @logger.catch(reraise=True)
-    @spec.validate(tags=[management_tag],
-        resp=spectree.Response(HTTP_200=VersionHashResp))
+    @spec.validate(tags=[management_tag])
     def on_get(self, req, resp):
-        """Returns a hash of this program itself."""
-        resp.media = { "sha256": versionhash.sha256sum }
+        """Returns the version string."""
+        resp.text = version
 
 
-@export
 class LogLevel:
     class LogLevelBody(Schema):
         level: str = Field(..., description=

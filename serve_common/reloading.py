@@ -26,8 +26,12 @@ class PollingReloader(_AbstractReloader):
 
             if mtime is None:
                 continue
-            if old_mtime is None or old_mtime < mtime:
-                self.reload_func()
+            if old_mtime is not None and old_mtime < mtime:
+                try:
+                    self.reload_func()
+                except:
+                    import traceback
+                    traceback.print_exc()
             old_mtime = mtime
 
 
