@@ -49,8 +49,13 @@ def notify(event: str, data=()):
 
 @export
 @synchronized(cb_lock)
-def register(event: Union[str, re.Pattern], cb):
+def register(event: Union[str, re.Pattern], cb=None):
+    if cb is None:
+        from functools import partial
+        return partial(register, event)
+
     callbacks.append((event, cb))
+    return cb
 
 
 @export
@@ -95,7 +100,7 @@ def enable_ipc():
     """
 
     global _ipc_conn
-    ipc.enable()
+    ipc.setup()
     _ipc_conn = ipc.join_group("CALLBACK")
 
     def recv_msg():

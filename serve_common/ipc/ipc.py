@@ -8,6 +8,7 @@ import queue
 import socket
 import selectors
 import os
+import sys
 
 from collections import defaultdict
 
@@ -17,6 +18,8 @@ from .sockutil import *
 # We will assign an IPCServer instance to this to keep the obj alive.
 _server = None
 server_address: bytes = None
+
+ENVIRON_KEY = bytes("SERVCOM_IPC_ADDR", sys.getfilesystemencoding())
 
 
 class MsgGroupStorage:
@@ -142,9 +145,33 @@ def join_group(msg_group: str) -> socket.socket:
     return s
 
 
-def enable():
-    if server_address is None:
+def setup(address=None):
+    """
+    Sets up the IPC module.
+
+    If the SERVCOM_IPC_ADDR environment variable is set,
+    its value is used as the address of the IPC server to connect to.
+    If an address is specified by the parameter,
+    the argument overrides the environment variable.
+    If neither was provided and the module was not previously initialized,
+    a new IPC server is started.
+    Otherwise, if the module was previously initialized,
+    do nothing and continue to communicate on the current server.
+    """
+    global server_address
+
+    try:
+        server_address = os.environb[ENVIRON_KEY]
+    except KeyError:
+        pass
+
+    if address is not None:
+        server_address = address
+
+    if server_address is None or len(server_address) == 0:
         start()
+    os.environb[ENVIRON_KEY] = server_address
+
 
 def start() -> int:
     """Starts a new IPC server process and returns its PID."""
@@ -154,8 +181,7 @@ def start() -> int:
     entry = __name__.removesuffix(".ipc")  # use parent module as entry point
     proc = Popen([sys.executable, "-m", entry], stdout=PIPE)
 
-    global server_address
-    server_address = proc.stdout.read()
+    setup(proc.stdout.read())
     return proc.pid
 
 
