@@ -19,7 +19,7 @@ from .sockutil import *
 _server = None
 server_address: bytes = None
 
-ENVIRON_KEY = bytes("SERVCOM_IPC_ADDR", sys.getfilesystemencoding())
+ENVIRON_KEY = "SERVCOM_IPC_ADDR"
 
 
 class MsgGroupStorage:
@@ -79,7 +79,7 @@ class IPCServer:
 
         self.mg_store.add_conn(conn, group)
 
-        #conn.setblocking(False)
+        conn.setblocking(False)
         self.selector.register(conn, selectors.EVENT_READ, self.new_message)
 
 
@@ -99,9 +99,9 @@ class IPCServer:
                 continue
             try:
                 send(c, msg)
-            # except BlockingIOError:
-            #     pass  # too many messages on that connection not being read
-            except EOFError:
+            except (EOFError, BlockingIOError):
+                # connection closed or
+                # too many messages on that connection not being read
                 sock.close()
                 self.selector.unregister(sock)
                 self.mg_store.remove_conn(c)
@@ -139,6 +139,20 @@ class IPCServer:
 
 
 def join_group(msg_group: str) -> socket.socket:
+    """
+    Joins a message group.
+
+    The raw send and recv methods on returned socket should not be used,
+    the send and recv functions provided by this module should be used instead.
+    Messages sent through this socket will be broadcast
+    to all other members in the group;
+    likewise, messages from all other members can be received on this socket.
+
+    No message is dropped implicitly,
+    so the caller must be careful to receive all messages
+    (and discard if uninterested) in a timely manner:
+    the IPC server will close the socket if it cannot send through it.
+    """
     assert server_address is not None
     s = connect(server_address)
     send(s, msg_group)
@@ -160,8 +174,14 @@ def setup(address=None):
     """
     global server_address
 
+    import base64
+    # bytes -> str
+    b64encode = lambda bs: base64.b64encode(bs).decode("utf-8")
+    # str -> bytes
+    b64decode = lambda s: base64.b64decode(s)
+
     try:
-        server_address = os.environb[ENVIRON_KEY]
+        server_address = b64decode(os.environ[ENVIRON_KEY])
     except KeyError:
         pass
 
@@ -170,7 +190,7 @@ def setup(address=None):
 
     if server_address is None or len(server_address) == 0:
         start()
-    os.environb[ENVIRON_KEY] = server_address
+    os.environ[ENVIRON_KEY] = b64encode(server_address)
 
 
 def start() -> int:
@@ -189,7 +209,8 @@ def shutdown():
     try:
         with join_group("CONTROL") as c:
             send(c, "shutdown")
-            recv(c)  # waits for ack
+            while recv(c) != "ack_shutdown":
+                pass
     except ConnectionRefusedError:
         # was not running
         pass
