@@ -49,10 +49,33 @@ def notify(event: str, data=()):
 
 @export
 @synchronized(cb_lock)
-def register(event: Union[str, re.Pattern], cb=None):
+def register(event: Union[str, re.Pattern],
+        cb=None,
+        *,
+        pass_event: bool=True):
+    """
+    Registers the callback to be invoked when event is receieved.
+    If pass_event is False,
+    the event argument will not be passed to the callback.
+    If cb is None, the return value is a decorator
+    that will register the specified function.
+    """
+
+    assert isinstance(pass_event, bool)
+
     if cb is None:
-        from functools import partial
-        return partial(register, event)
+        # can't use partial: breaks with stacked register
+        return (lambda cb:
+                register(event, pass_event=pass_event, cb=cb))
+
+    assert callable(cb)
+
+    if not pass_event:
+        original_cb = cb
+        # We can't use the same name 'cb',
+        # otherwise the name in the lambda at runtime
+        # refers to the lambda itself.
+        cb = lambda event, *args: original_cb(*args)
 
     callbacks.append((event, cb))
     return cb

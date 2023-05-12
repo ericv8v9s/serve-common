@@ -126,6 +126,16 @@ class IPCServer:
 
 
     def await_shutdown(self):
+        def await_parent_death():
+            import os
+            while True:
+                if self.shutdown_event.wait(1):
+                    break
+                if os.getppid() == 1:
+                    self.shutdown_event.set()
+                    shutdown()
+        Thread(target=await_parent_death, daemon=True).start()
+
         with join_group("CONTROL") as ctrl:
             while True:
                 msg = recv(ctrl)
@@ -243,14 +253,14 @@ def _spawn_proc():
     """
     Initialization for new server process.
     """
-    from signal import signal, SIGINT
+    from signal import signal, SIGINT, SIG_IGN
     from sys import stdout
 
     global _server, server_address
     _server = IPCServer()
     server_address = _server.listener.getsockname()
 
-    signal(SIGINT, lambda signum, frame: shutdown())
+    signal(SIGINT, SIG_IGN)  # we want to be shutdown explicitly by parent
 
     _server.start()
 
