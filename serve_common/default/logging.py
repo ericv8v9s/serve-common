@@ -12,7 +12,7 @@ llfilter = LogLevelFilter("logging.level")
 def format_msg(record) -> str:
     time = "[{time:YYYY-MM-DD HH:mm:ss.SSS}] "
     level = "[{level: <8}] "
-    pid = "[pid {process}] "
+    pid = "[{process}] "
 
     location = ""
     curr_level = logger.level(llfilter.level).no
