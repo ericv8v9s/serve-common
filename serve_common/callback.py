@@ -58,7 +58,8 @@ def _remove_callback(cbid):
     del callbacks[cbid]
 
 
-def _generate_ack_event_name(event):
+@export
+def get_completion_name(event: str):
     return "completed:" + event
 
 @export
@@ -95,7 +96,7 @@ class Callback:
         if self.cmpl_ack_enabled:
             return self
         if ack_event is None:
-            ack_event_gen = _generate_ack_event_name
+            ack_event_gen = get_completion_name
         else:
             ack_event_gen = lambda e: ack_event
         cb = self.cb
@@ -172,7 +173,7 @@ def notify(event: str, data=()):
 
 
 @export
-def get_waiter(event: str) -> threading.Event:
+def wait_for(event: str) -> threading.Event:
     completion_event = Event()
     (Callback(event, lambda _: completion_event.set())
         .single_use().register())
@@ -181,8 +182,8 @@ def get_waiter(event: str) -> threading.Event:
 @export
 def notify_and_wait(event: str, data=(), ack_event=None, timeout=None):
     if ack_event is None:
-        ack_event = _generate_ack_event_name(event)
-    completion_event = get_waiter(ack_event)
+        ack_event = get_completion_name(event)
+    completion_event = wait_for(ack_event)
     notify(event, data)
     completion_event.wait(timeout)
 
