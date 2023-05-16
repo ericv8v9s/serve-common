@@ -128,11 +128,8 @@ class IPCServer:
     def await_shutdown(self):
         def await_parent_death():
             import os
-            while True:
-                if self.shutdown_event.wait(1):
-                    break
+            while not self.shutdown_event.wait(1):
                 if os.getppid() == 1:
-                    self.shutdown_event.set()
                     shutdown()
         Thread(target=await_parent_death, daemon=True).start()
 
