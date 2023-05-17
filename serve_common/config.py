@@ -32,7 +32,7 @@ def lookup(d: dict, path: str):
         try:
             d = d[key]
         except TypeError as e:
-            raise KeyError from e
+            raise KeyError(path) from None
     return d
 
 
