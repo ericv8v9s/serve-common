@@ -1,7 +1,8 @@
 from uuid import uuid4
+import threading
 
 
-context = type("", (), {})()
+context = threading.local()
 def get():
     return getattr(context, "request_id", None)
 def set(id):
