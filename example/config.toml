@@ -1,0 +1,4 @@
+[logging]
+# in increasing severity: TRACE DEBUG INFO SUCCESS WARNING ERROR CRITICAL
+level = "DEBUG"
+logs_dir = "logs"

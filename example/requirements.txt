@@ -1,0 +1,6 @@
+serve-common @ https://github.com/ericv8v9s/serve-common/archive/refs/heads/master.tar.gz
+gunicorn==20.1.0
+falcon==3.1.1
+spectree==1.1.0
+pydantic==1.10.7
+loguru==0.7.0
