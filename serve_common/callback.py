@@ -8,9 +8,6 @@ but will not be synchronized afterwards —
 child may register additional callbacks,
 but they will not be observable in parent, and vice versa.
 
-Each process interested in executing callbacks should call `callback_loop`,
-and registered callbacks will execute in each of such processes.
-
 Event data passed to `notify` must be pickleable.
 If IPC is enabled, events will be sent between processes using the CALLBACK group.
 """
@@ -174,6 +171,16 @@ def notify(event: str, data=()):
 
 @export
 def wait_for(event: str) -> threading.Event:
+    """
+    Returns a threading.Event that is set when the event is observed.
+
+    Note that calling this function
+    after starting the operation to wait for creates a race condition:
+    when the operation completes and sends the completion event,
+    the caller's threading.Event may have not been setup in time
+    to receive the completion event,
+    causing the event to be missed and any subsequent wait() to wait forever.
+    """
     completion_event = Event()
     (Callback(event, lambda _: completion_event.set())
         .single_use().register())
@@ -188,7 +195,9 @@ def notify_and_wait(event: str, data=(), ack_event=None, timeout=None):
     completion_event.wait(timeout)
 
 
-def callback_loop():
+_callback_loop_thread: Thread = None
+
+def _callback_loop():
     while True:
         event, data = event_queue.get()
 
@@ -211,12 +220,6 @@ def callback_loop():
                 pass
 
 
-def start_callback_loop():
-    t = Thread(target=callback_loop, daemon=True)
-    t.start()
-    return t
-
-
 # IPC is optional. If we don't initialize IPC,
 # callbacks will function within the process.
 _ipc_conn = None
@@ -226,8 +229,10 @@ def enable_ipc():
     Connect to IPC under the CALLBACK group.
     Also starts a thread to receive messages.
     """
-
     global _ipc_conn
+    if _ipc_conn is not None:
+        return
+
     ipc.setup()
     _ipc_conn = ipc.join_group("CALLBACK")
 
@@ -242,7 +247,11 @@ def enable_ipc():
 
 
 def initialize(ipc=False):
-    Thread(target=callback_loop, daemon=True).start()
+    global _callback_loop_thread
+    if _callback_loop_thread is None or not _callback_loop_thread.is_alive():
+        _callback_loop_thread = Thread(target=_callback_loop, daemon=True)
+        _callback_loop_thread.start()
+
     if ipc:
         enable_ipc()
 
@@ -251,10 +260,12 @@ def post_fork():
     """
     Call in child process after fork to restart threads.
     """
+    global _ipc_conn
     # If _ipc_conn is not None, it was initialized,
     # but should not be used in child.
     if _ipc_conn is not None:
         _ipc_conn.close()
+        _ipc_conn = None  # force reinit _ipc_conn
         initialize(ipc=True)
     else:
         initialize()

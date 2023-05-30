@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serve-common"
-version = "1.0.1"
+version = "1.1.0"
 requires-python = ">=3.9.2"
 
 dependencies = [
@@ -12,5 +12,5 @@ dependencies = [
 	"tomli==2.0.1 ; python_version < '3.11'",
 	"loguru==0.7.0",
 	"spectree==1.1.0",
-	"pydantic==1.10.7"
+	"pydantic==1.10.8"
 ]
