@@ -2,7 +2,7 @@ from uuid import uuid4
 import threading
 
 
-context = threading.local()
+context = threading.local()  # greenlet also monkeypatches this
 def get():
     return getattr(context, "request_id", None)
 def set(id):

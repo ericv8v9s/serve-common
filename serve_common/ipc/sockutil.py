@@ -1,7 +1,10 @@
+from typing import Any
+
+import os
 import pickle
 import struct
+import socket
 from socket import (
-    socket,
     AF_UNIX,
     SOCK_SEQPACKET,
     SOCK_CLOEXEC,
@@ -10,17 +13,29 @@ from socket import (
 from serve_common.export import *
 
 
+FAMILY = AF_UNIX
+TYPE = SOCK_SEQPACKET | SOCK_CLOEXEC
+
+
+@export
+def socketpair(family=FAMILY, type=TYPE, proto=0):
+    a, b = socket.socketpair(family, type, proto)
+    os.set_inheritable(a.fileno(), True)
+    os.set_inheritable(b.fileno(), True)
+    return a, b
+
+
 @export
 def create_listener(addr=""):
-    l = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC)
-    l.bind("")  # autobind (see unix(7))
+    l = socket.socket(FAMILY, TYPE)
+    l.bind(addr)  # autobind (see unix(7))
     l.listen()
     return l
 
 
 @export
 def connect(addr):
-    s = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC)
+    s = socket.socket(FAMILY, TYPE)
     s.connect(addr)
     return s
 
@@ -35,14 +50,17 @@ class BadIPCMessageFormat(Exception):
 
 
 @export
-def send(sock, obj):
-    msg = pickle.dumps(obj)
-    header = struct.pack(_HEADER_FMT, len(msg))
-    sock.sendall(header + msg)
+def send_raw(sock, buf: bytes):
+    header = struct.pack(_HEADER_FMT, len(buf))
+    sock.sendall(header + buf)
+
+@export
+def send(sock, obj: Any):
+    send_raw(sock, pickle.dumps(obj))
 
 
 @export
-def recv(sock):
+def recv_raw(sock) -> bytes:
     header = sock.recv(_HEADER_LEN, MSG_PEEK)
     if len(header) == 0:
         raise EOFError()
@@ -56,4 +74,8 @@ def recv(sock):
 
     data = sock.recv(_HEADER_LEN + msglen)
 
-    return pickle.loads(data[_HEADER_LEN:])
+    return data[_HEADER_LEN:]
+
+@export
+def recv(sock) -> Any:
+    return pickle.loads(recv_raw(sock))

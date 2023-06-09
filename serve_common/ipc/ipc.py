@@ -1,7 +1,8 @@
 """
 Message based IPC using Unix domain sockets.
 """
-
+from typing import Callable, Optional
+from overrides import override
 
 from threading import Thread, Event
 import queue
@@ -9,15 +10,58 @@ import socket
 import selectors
 import os
 import sys
-
 from collections import defaultdict
+from abc import ABC, abstractmethod
 
 from .sockutil import *
 
 
+class AbstractSocketServer(ABC):
+    """
+    Abstract base class that sets up a selector and listening socket
+    and accepts connections through the socket using the selector.
+    """
+
+    def __init__(self,
+            selector_factory: Callable[[], selectors.BaseSelector],
+            listener_factory: Callable[[], socket.socket]):
+        self.selector = selector_factory()
+        self.listener = listener_factory()
+        self.selector.register(self.listener, selectors.EVENT_READ, self.accept)
+
+        self.shutdown_event = Event()
+        def select_loop():
+            while not self.shutdown_event.is_set():
+                readies = self.selector.select(timeout=1)
+                for key, _ in readies:
+                    callback = key.data
+                    try:
+                        callback(key.fileobj)
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+        self.select_loop = Thread(target=select_loop, daemon=True)
+
+    @abstractmethod
+    def accept(self, listener):
+        ...
+
+    def start(self):
+        self.select_loop.start()
+
+    def shutdown(self):
+        self.shutdown_event.set()
+        self.select_loop.join()
+        self.selector.close()
+        self.listener.close()
+
+    def await_shutdown(self):
+        self.shutdown_event.wait()
+
+
 # We will assign an IPCServer instance to this to keep the obj alive.
 _server = None
-server_address: bytes = None
+server_address: Optional[bytes] = None
 
 ENVIRON_KEY = "SERVCOM_IPC_ADDR"
 
@@ -48,20 +92,13 @@ class MsgGroupStorage:
         del self.conns[conn]
 
 
-class IPCServer:
+class IPCServer(AbstractSocketServer):
     def __init__(self):
-        self.selector = selectors.DefaultSelector()
-
-        self.listener = create_listener()
-        #self.listener.setblocking(False)
-        self.selector.register(self.listener, selectors.EVENT_READ, self.accept)
-
+        super().__init__(selectors.DefaultSelector, create_listener)
         self.mg_store = MsgGroupStorage()
 
-        self.select_loop = Thread(target=self.run)
-        self.shutdown_event = Event()
 
-
+    @override
     def accept(self, listener):
         # Only called when ready as determined by selector.
         try:
@@ -78,15 +115,13 @@ class IPCServer:
             return
 
         self.mg_store.add_conn(conn, group)
-
-        conn.setblocking(False)
         self.selector.register(conn, selectors.EVENT_READ, self.new_message)
 
 
     def new_message(self, sock):
         # Only called when ready as determined by selector.
         try:
-            msg = recv(sock)
+            msg = recv_raw(sock)
         except (EOFError, ConnectionError):
             sock.close()
             self.selector.unregister(sock)
@@ -98,51 +133,33 @@ class IPCServer:
             if c == sock:
                 continue
             try:
-                send(c, msg)
+                send_raw(c, msg)
             except (EOFError, BlockingIOError):
                 # connection closed or
                 # too many messages on that connection not being read
+                # TODO don't close if there is still data for us to read
                 sock.close()
                 self.selector.unregister(sock)
                 self.mg_store.remove_conn(c)
 
 
-    def run(self):
-        while not self.shutdown_event.is_set():
-            readies = self.selector.select(timeout=1)
-            for key, events in readies:
-                callback = key.data
-                try:
-                    callback(key.fileobj)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-        self.selector.close()
-
-
-    def start(self):
-        self.select_loop.start()
-        return self.select_loop
-
-
+    @override
     def await_shutdown(self):
         def await_parent_death():
-            import os
             while not self.shutdown_event.wait(1):
                 if os.getppid() == 1:
+                    # sends shutdown command to self; recv has no timeout
                     shutdown()
         Thread(target=await_parent_death, daemon=True).start()
 
-        with join_group("CONTROL") as ctrl:
+        # TODO correct shutdown should not depend on await_shutdown being called
+        with join_group("CONTROL") as control:
             while True:
-                msg = recv(ctrl)
+                msg = recv(control)
                 if msg == "shutdown":
-                    send(ctrl, "ack_shutdown")
+                    send(control, "ack_shutdown")
                     break
-
-        self.shutdown_event.set()
-        self.select_loop.join()
-        self.listener.close()
+        self.shutdown()
 
 
 def join_group(msg_group: str) -> socket.socket:
@@ -166,6 +183,46 @@ def join_group(msg_group: str) -> socket.socket:
     return s
 
 
+#def establish_direct(key: str) -> socket.socket:  # TODO
+#    """
+#    Establishes a direct connection with another process that called
+#    with the same key.
+#    """
+#    from enum import IntEnum, auto
+#
+#    s = join_group(f"EST_DIRECT_{key}")
+#
+#    received_msgs = queue.SimpleQueue()
+#    selector = selectors.DefaultSelector()
+#    selector.register(s, selectors.EVENT_READ)
+#    sel_loop_stop = Event()
+#    def selector_loop():
+#        while not sel_loop_stop.is_set():
+#            selector.select(timeout=1)
+#
+#    class State(IntEnum):
+#        LISTENING       = auto()
+#        CANDIDATE_FOUND = auto()
+#        DONE            = auto()
+#
+#    state = State.LISTENING
+#    while True:
+#        if state is State.LISTENING:
+#            send(s, os.getpid())
+#        if state is State.DONE:
+#            selector.close()
+#            s.close()
+#            break
+
+
+import base64
+
+def b64encode(b: bytes) -> str:
+    return base64.b64encode(b).decode("utf-8")
+def b64decode(s: str) -> bytes:
+    return base64.b64decode(s)
+
+
 def setup(address=None):
     """
     Sets up the IPC module.
@@ -174,18 +231,11 @@ def setup(address=None):
     its value is used as the address of the IPC server to connect to.
     If an address is specified by the parameter,
     the argument overrides the environment variable.
-    If neither was provided and the module was not previously initialized,
-    a new IPC server is started.
-    Otherwise, if the module was previously initialized,
-    do nothing and continue to communicate on the current server.
+    Otherwise, a RuntimeError is raised.
+
+    This function is idempotent.
     """
     global server_address
-
-    import base64
-    # bytes -> str
-    b64encode = lambda bs: base64.b64encode(bs).decode("utf-8")
-    # str -> bytes
-    b64decode = lambda s: base64.b64decode(s)
 
     try:
         server_address = b64decode(os.environ[ENVIRON_KEY])
@@ -196,19 +246,22 @@ def setup(address=None):
         server_address = address
 
     if server_address is None or len(server_address) == 0:
-        start()
-    os.environ[ENVIRON_KEY] = b64encode(server_address)
+        raise RuntimeError("no IPC server running")
 
 
 def start() -> int:
-    """Starts a new IPC server process and returns its PID."""
-    import sys
+    """
+    Starts a new IPC server process and exports its address to the environment.
+    Returns the PID of the server process.
+    """
     from subprocess import Popen, PIPE
 
     entry = __name__.removesuffix(".ipc")  # use parent module as entry point
     proc = Popen([sys.executable, "-m", entry], stdout=PIPE)
 
-    setup(proc.stdout.read())
+    os.environ[ENVIRON_KEY] = b64encode(proc.stdout.read())
+    setup()
+
     return proc.pid
 
 

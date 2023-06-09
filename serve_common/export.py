@@ -16,6 +16,8 @@ def _export_name(ident: str, stack_depth=2):
     try:
         for _ in range(stack_depth):
             frame = frame.f_back
+            if frame is None:  # stack wasn't deep enough for export
+                return  # yes, the finally block does execute
 
         try:
             __all__ = frame.f_globals["__all__"]
