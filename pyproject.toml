@@ -10,7 +10,6 @@ requires-python = ">=3.9.2"
 dependencies = [
 	"falcon>=3.1.1",
 	"tomli>=2.0.1 ; python_version < '3.11'",
-	"loguru>=0.7.0",
 	"spectree>=1.1.0",
 	"pydantic>=1.10.8",
 	"overrides>=7.3.1"

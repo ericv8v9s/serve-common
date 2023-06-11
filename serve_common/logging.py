@@ -1,49 +1,21 @@
+from typing import Callable, Union, Literal
 import time
 from functools import wraps, partial
-from typing import Callable, Union
+import logging
 
-from loguru import logger
-
-from serve_common.export import *
-from serve_common.config import config
-from serve_common import callback
+from serve_common import request_id
 
 
-@export
-class LogLevelFilter:
-    """A loguru filter to allow changing log level on a sink."""
-
-    def __init__(self, config_path):
-        level = config.get(config_path, default="INFO")
-
-        self._level = "INFO"
-        self.level = level
-
-        # allow changing log level at runtime
-        def change_log_level(_, old_level, new_level):
-            logger.info(f"setting log level to [{new_level}]")
-            self.level = new_level
-        callback.register("config:logging.level", change_log_level)
-
-    @property
-    def level(self):
-        return self._level
-
-    @level.setter
-    def level(self, level: str):
-        try:
-            logger.level(level)
-        except ValueError:
-            logger.error(f"log level [{level}] does not exist,"
-                         f" remaining at [{self.level}]")
-            return
-        self._level = level
-
-    def __call__(self, record) -> bool:
-        return record["level"].no >= logger.level(self.level).no
+logger = logging.getLogger(__name__)
 
 
-@export
+class RequestIdInjector:  # Quacks like a logging.Filter.
+    def filter(self, record) -> Literal[1]:
+        rid = request_id.get()
+        record.request_id = f"[{rid}] " if rid is not None else ""
+        return 1
+
+
 class RequestTimer:
     """Falcon middleware to time each request."""
 
@@ -59,7 +31,6 @@ class RequestTimer:
         logger.info(f"request completed with {resp.status} (took {duration:.2f} ms)")
 
 
-@export
 class time_and_log:
     """
     A decorator and context manager to time and log a block or function.
@@ -95,3 +66,23 @@ class time_and_log:
                 return func(*args, **kwargs)
         return wrap
 
+
+def catch(
+        func=None,
+        *,
+        level=logging.ERROR,
+        reraise=False,
+        msg="Error caught"):
+    def dec(func):
+        @wraps(func)
+        def wrap(*args, **kws):
+            try:
+                return func(*args, **kws)
+            except Exception as e:
+                logging.getLogger(func.__module__).log(level, exc_info=True)
+                if reraise:
+                    raise e from None
+        return wrap
+    if func:
+        return dec(func)
+    return dec

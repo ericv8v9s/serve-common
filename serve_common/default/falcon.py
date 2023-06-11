@@ -1,11 +1,15 @@
 from typing import Callable
 from falcon import App
-from loguru import logger
+
+import logging
 
 from serve_common.spec import spec
 from serve_common.request_id import RequestTracer
-from serve_common.log_util import RequestTimer
+from serve_common.logging import RequestTimer
 from . import management
+
+
+logger = logging.getLogger(__name__)
 
 
 def setup_falcon(
@@ -19,5 +23,5 @@ def setup_falcon(
 
     spec.register(app)
 
-    logger.success("initialization complete")
+    logger.info("initialization complete")
     return app

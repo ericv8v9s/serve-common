@@ -1,6 +1,7 @@
 from threading import RLock
 import re
-from loguru import logger
+import logging
+
 # tomli became tomllib of stdlib in 3.11 (PEP 680)
 try:
     import tomllib
@@ -10,12 +11,15 @@ except ModuleNotFoundError:
 from serve_common.reloading import Reloader
 from serve_common import callback
 from serve_common.callback import synchronized
+from serve_common.logging import catch
 
 
 CONFIG_FILE = "config.toml"
 
+logger = logging.getLogger(__name__)
 
-@logger.catch
+
+@catch
 def load_config() -> dict:
     try:
         with open(CONFIG_FILE, "rb") as config_file:

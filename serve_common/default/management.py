@@ -2,10 +2,15 @@ import falcon
 import spectree
 from pydantic import BaseModel as Schema
 from pydantic import Field
-from loguru import logger
+
+import logging
 
 from serve_common.spec import spec
 from serve_common.config import config
+from serve_common.logging import catch
+
+
+logger = logging.getLogger(__name__)
 
 
 version = "0.0.1"
@@ -35,7 +40,7 @@ class OpenAPISpec:
         """Open API specification for this service in JSON format."""
         pass
 
-    @logger.catch(reraise=True)
+    @catch(reraise=True)
     @spec.validate(tags=[management_tag],
         resp=spectree.Response(HTTP_200=OpenAPISpecJson),
         skip_validation=True)
@@ -45,7 +50,7 @@ class OpenAPISpec:
 
 
 class Version:
-    @logger.catch(reraise=True)
+    @catch(reraise=True)
     @spec.validate(tags=[management_tag])
     def on_get(self, req, resp):
         """Returns the version string."""
@@ -57,14 +62,14 @@ class LogLevel:
         level: str = Field(..., description=
         "Current (GET) or desired (POST) log level.")
 
-    @logger.catch(reraise=True)
+    @catch(reraise=True)
     @spec.validate(tags=[management_tag],
         resp=spectree.Response(HTTP_200=LogLevelBody))
     def on_get(self, req, resp):
         """Returns the current logging level."""
         resp.media = { "level": config.get("logging.level") }
 
-    @logger.catch(reraise=True)
+    @catch(reraise=True)
     @spec.validate(tags=[management_tag],
         json=LogLevelBody)
     def on_post(self, req, resp):

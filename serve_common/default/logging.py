@@ -1,55 +1,55 @@
-import sys
-import os
-from loguru import logger
-from serve_common import request_id
-from serve_common.config import config
-from serve_common.log_util import *
+"""
+Default logging setup.
+"""
+
+import logging
 
 
-llfilter = LogLevelFilter("logging.level")
+format = (
+    "[%(asctime)s] [%(levelname)8s] [%(process)d] %(request_id)s"
+    "%(name)s: %(message)s")
 
 
-def format_msg(record) -> str:
-    time = "[{time:YYYY-MM-DD HH:mm:ss.SSS}] "
-    level = "[{level: <8}] "
-    pid = "[{process}] "
+# https://docs.python.org/3/library/logging.config.html#logging-config-dictschema
+def setup(app_name="app"):
+    """
+    Sets up a default logging configuration (see source for config dict).
+    The app_name is used as a logger name;
+    commonly this should be the root module name of your project.
+    """
 
-    location = ""
-    curr_level = logger.level(llfilter.level).no
-    thresh_level = logger.level("TRACE").no
-    if curr_level <= thresh_level:
-        location = "[{name}:{function}:{line}] "
+    import logging.config
 
-    rid = request_id.get()
-    rid_fmt = ""
-    if rid is not None:
-        rid_fmt = f"[{rid}] "
-
-    return (
-        "<level>"
-       f"{time}{level}{pid}{location}{rid_fmt}"
-        "{message}"
-        "</level>\n{exception}")
-
-
-def add_output_stderr():
-    # remove default logger output
-    logger.remove(0)
-
-    logger.add(sys.stderr,
-        level=0,
-        format=format_msg,
-        filter=llfilter,
-        enqueue=True)
-
-
-def add_output_file(filename="app.log"):
-    log_dir = config.get("logging.logs_dir", default="logs")
-    os.makedirs(log_dir, mode=0o700, exist_ok=True)
-    logger.add(f"{log_dir}/{filename}",
-        level=0,
-        format=format_msg,
-        filter=llfilter,
-        rotation="2 MB",
-        enqueue=True)
+    config = {
+        "version": 1,
+        "formatters": {
+            "serve_common_default_formatter": {
+                "format": format,
+                "datefmt": "%Y-%m-%d %H:%M:%S %z"
+            }
+        },
+        # A filter that injects request id's.
+        "filters": {
+            "request_id_injector": {
+                "()": "serve_common.logging.RequestIdInjector"
+            }
+        },
+        # Log to stderr.
+        "handlers": {
+            "serve_common_default_handler": {
+                "class": "logging.StreamHandler",
+                "level": "DEBUG",
+                "formatter": "serve_common_default_formatter",
+                "filters": ["request_id_injector"]
+            }
+        },
+        "loggers": {
+            app_name: {
+                "level": "INFO",
+                "handlers": ["serve_common_default_handler"]
+            }
+        },
+        "disable_existing_loggers": False
+    }
+    logging.config.dictConfig(config)
 
