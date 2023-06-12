@@ -79,17 +79,17 @@ class MsgGroupStorage:
     """
 
     def __init__(self):
-        self.groups = defaultdict(set)
-        self.conns = dict()
+        self.conns = defaultdict(set)  # group -> connections
+        self.groups = dict()  # connection -> group
 
     def add_conn(self, conn, group):
-        self.groups[group].add(conn)
-        self.conns[conn] = group
+        self.conns[group].add(conn)
+        self.groups[conn] = group
 
     def remove_conn(self, conn):
-        group = self.conns[conn]
-        self.groups[group].remove(conn)
-        del self.conns[conn]
+        group = self.groups[conn]
+        self.conns[group].remove(conn)
+        del self.groups[conn]
 
 
 class IPCServer(AbstractSocketServer):
@@ -128,13 +128,13 @@ class IPCServer(AbstractSocketServer):
             self.mg_store.remove_conn(sock)
             return
 
-        group = self.mg_store.conns[sock]
-        for c in self.mg_store.groups[group]:
+        group = self.mg_store.groups[sock]
+        for c in self.mg_store.conns[group]:
             if c == sock:
                 continue
             try:
                 send_raw(c, msg)
-            except (EOFError, BlockingIOError):
+            except (EOFError, ConnectionError, BlockingIOError):
                 # connection closed or
                 # too many messages on that connection not being read
                 # TODO don't close if there is still data for us to read

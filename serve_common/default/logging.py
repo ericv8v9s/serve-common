@@ -1,17 +1,30 @@
 """
 Default logging setup.
+
+The default configuration after calling setup contains a formatter
+(using ``format`` defined in this module);
+a filter that injects request_id's into the log message if available;
+and a handler that logs to stderr all messages of DEBUG and above,
+applying the aformentioned formatter and filter;
+and 2 loggers, both logging at configurable level
+and one is named as specified by the call to ``setup``.
+The other logger has the name ``serve_common``,
+and is the parent of all loggers used in this library.
 """
 
+from typing import Union
 import logging
 
 
 format = (
-    "[%(asctime)s] [%(levelname)8s] [%(process)d] %(request_id)s"
+    "[%(asctime)s] [%(process)d] [%(levelname)s] %(request_id)s"
     "%(name)s: %(message)s")
 
 
 # https://docs.python.org/3/library/logging.config.html#logging-config-dictschema
-def setup(app_name="app"):
+def setup(*,
+        app_name="app",
+        level: Union[int, str] = logging.INFO):
     """
     Sets up a default logging configuration (see source for config dict).
     The app_name is used as a logger name;
@@ -45,7 +58,11 @@ def setup(app_name="app"):
         },
         "loggers": {
             app_name: {
-                "level": "INFO",
+                "level": level,
+                "handlers": ["serve_common_default_handler"]
+            },
+            "serve_common": {
+                "level": level,
                 "handlers": ["serve_common_default_handler"]
             }
         },

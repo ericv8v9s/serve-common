@@ -52,7 +52,7 @@ class time_and_log:
     def __exit__(self, exc_type, exc_val, exc_tb):
         duration = time.monotonic_ns() - self.start_time
         msg = self.msg() if callable(self.msg) else self.msg
-        logger.debug(f"{msg}: {duration} ns")
+        logger.info(f"{msg}: {duration} ns")
         return False
 
     def __call__(self, func):
@@ -79,7 +79,8 @@ def catch(
             try:
                 return func(*args, **kws)
             except Exception as e:
-                logging.getLogger(func.__module__).log(level, exc_info=True)
+                logging.getLogger(func.__module__) \
+                        .log(level, "", exc_info=True)
                 if reraise:
                     raise e from None
         return wrap

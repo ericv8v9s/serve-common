@@ -12,12 +12,16 @@ from functools import partial
 from dataclasses import dataclass
 from enum import IntEnum, auto
 import os
+import logging
+from traceback import print_exc
 
 from serve_common import ipc
 from serve_common.ipc.ipc import AbstractSocketServer
 from serve_common import compute
 from serve_common.ipc.sockutil import *
 from serve_common.export import *
+
+logger = logging.getLogger(__name__)
 
 
 @export
@@ -132,11 +136,9 @@ class ProcessPoolClient(Executor):
                 except EOFError:
                     if self.shutdown_event.is_set():
                         break
-                    import traceback
-                    traceback.print_exc()
+                    print_exc()
                 except Exception:
-                    import traceback
-                    traceback.print_exc()
+                    print_exc()
         self.retriever = Thread(target=retrieve, daemon=True)
         self.retriever.start()
 
@@ -294,8 +296,7 @@ class PoolManager(AbstractSocketServer):
             answer = recv(worker)
         except OSError:
             # should never happen
-            import traceback
-            traceback.print_exc()
+            print_exc()
             self.unregister_worker(worker)
             return
         except EOFError:
@@ -344,6 +345,7 @@ class PoolManager(AbstractSocketServer):
                     result_type = Message.Type.ERROR
                 send(sc, Message(result_type, result))
         except:
+            print_exc()
             sc.close()
             os._exit(1)
         sc.close()
