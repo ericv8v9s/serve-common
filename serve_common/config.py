@@ -10,7 +10,7 @@ except ModuleNotFoundError:
 
 from serve_common.reloading import Reloader
 from serve_common import callback
-from serve_common.callback import synchronized
+from serve_common.threads import synchronized
 from serve_common.logging import catch
 
 
@@ -25,7 +25,7 @@ def load_config() -> dict:
         with open(CONFIG_FILE, "rb") as config_file:
             return tomllib.load(config_file)
     except OSError as e:
-        logger.warning(f"failed to read config file: {e.strerror}")
+        logger.error(f"failed to read config file: {e.strerror}")
     except tomllib.TOMLDecodeError as e:
         logger.error(f"bad TOML in config file: {str(e)}")
 
@@ -35,7 +35,7 @@ def lookup(d: dict, path: str):
     for key in keys:
         try:
             d = d[key]
-        except TypeError as e:
+        except KeyError as e:
             raise KeyError(path) from None
     return d
 

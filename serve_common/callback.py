@@ -1,18 +1,17 @@
 """
 Event based callbacks.
 
-Multiple threads/processes may `notify` events,
-and each `register`ed callback will receive a copy of the event.
+Multiple threads/processes may ``notify`` events,
+and each ``register``ed callback will receive a copy of the event.
 Registered callbacks will persist across forks,
 but will not be synchronized afterwards —
 child may register additional callbacks,
 but they will not be observable in parent, and vice versa.
 
-Event data passed to `notify` must be pickleable.
-If IPC is enabled, events will be sent between processes using the CALLBACK group.
+Event data passed to ``notify`` must be pickleable.
+If IPC is enabled, events will be sent between processes using the callback group.
 """
 
-from functools import wraps
 import threading
 from threading import Thread, RLock, Event
 from queue import SimpleQueue
@@ -21,18 +20,20 @@ import os
 from typing import Union
 
 from serve_common import ipc
+from serve_common.threads import synchronized
 from serve_common.export import *
 
+__all__ = [
+    "get_completion_name",
+    "Callback",
+    "register",
+    "notify",
+    "wait_for",
+    "notify_and_wait"
+]
 
-def synchronized(lock):
-    def deco(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            with lock:
-                return func(*args, **kwargs)
-        return wrapper
-    return deco
 
+CALLBACK_GROUP = __name__
 
 event_queue = SimpleQueue()
 callbacks = {}
@@ -162,6 +163,9 @@ def register(event: Union[str, re.Pattern],
 
 @export
 def notify(event: str, data=()):
+    if _callback_loop_thread is None or not _callback_loop_thread.is_alive():
+        raise RuntimeError("callback module not initialized")
+
     if not isinstance(data, tuple):
         raise TypeError()
     event_queue.put((event, data))
@@ -169,25 +173,45 @@ def notify(event: str, data=()):
         ipc.send(_ipc_conn, (event, data))
 
 
-@export
-def wait_for(event: str) -> threading.Event:
-    """
-    Returns a threading.Event that is set when the event is observed.
+class WaitContext:
+    def __init__(self, event: str):
+        self.event = Event()
+        (Callback(event, lambda _: self.event.set())
+            .single_use().register())
 
-    Note that calling this function
-    after starting the operation to wait for creates a race condition:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if None is exc_type is exc_val is exc_tb:
+            self.event.wait()
+        return False
+
+    def wait(self, timeout=None) -> bool:
+        return self.event.wait(timeout=timeout)
+
+@export
+def wait_for(event: str) -> WaitContext:
+    """
+    Returns a context manager that blocks on exit until the event is observed
+    (except if an exception occurred).
+
+    Note that calling this function after starting the operation
+    that would trigger the target event creates a race condition:
     when the operation completes and sends the completion event,
-    the caller's threading.Event may have not been setup in time
-    to receive the completion event,
+    the caller may have not been setup in time to receive the completion event,
     causing the event to be missed and any subsequent wait() to wait forever.
     """
-    completion_event = Event()
-    (Callback(event, lambda _: completion_event.set())
-        .single_use().register())
-    return completion_event
+    return WaitContext(event)
+
 
 @export
 def notify_and_wait(event: str, data=(), ack_event=None, timeout=None):
+    """
+    Notifies and waits for a completion acknowledgement.
+    The completion acknowledgement would only be sent back if the event
+    was registered to produce one.
+    """
     if ack_event is None:
         ack_event = get_completion_name(event)
     completion_event = wait_for(ack_event)
@@ -226,7 +250,7 @@ _ipc_conn = None
 
 def enable_ipc():
     """
-    Connect to IPC under the CALLBACK group.
+    Connect to IPC under the callback group.
     Also starts a thread to receive messages.
     """
     global _ipc_conn
@@ -234,7 +258,7 @@ def enable_ipc():
         return
 
     ipc.setup()
-    _ipc_conn = ipc.join_group("CALLBACK")
+    _ipc_conn = ipc.join_group(CALLBACK_GROUP)
 
     def recv_msg():
         try:

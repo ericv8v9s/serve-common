@@ -1,69 +1,70 @@
 """
 Message based IPC using Unix domain sockets.
 """
-from typing import Callable, Optional
+
+# TODO redesign to use ZeroMQ
+
+from typing import Optional
 from overrides import override
 
-from threading import Thread, Event
-import queue
 import socket
-import selectors
+from selectors import EVENT_READ
 import os
 import sys
 from collections import defaultdict
-from abc import ABC, abstractmethod
+import logging
 
+from serve_common.export import *
+from serve_common.threads import thread_target
+
+from .server import AbstractSocketServer
 from .sockutil import *
 
+logger = logging.getLogger(__name__)
+# TODO sort out LogServer startup
+# IPC has to start first,
+# otherwise the log server would never get the IPC server address.
+# This means the IPC process, during startup,
+# cannot produce logs to the log server until it, too, has started.
+# Proposals:
+# a) queue logs until a server is connected, then flush the queue
+#    undesirable: a thread need to be started in each handler and poll
+# b) rewrite logging server to make it independent of IPC system
+#    undesirable: this makes effectively a second IPC system
+# c) make IPC system's logging separate (it's own config to it's own file)
+# d) start IPC in a "bootstrap" mode, logging with user provided config;
+#    when a log server is started, switch over to that.
+#    - when log server is ready, it needs to somehow signal it
+#      (serve_common.callback?)
+#    - IPC module needs to provide an API to change it's logging setup
+# e) disable logging in IPC
 
-class AbstractSocketServer(ABC):
+
+__all__ = [
+    "server_address",
+    "join_group",
+    "setup",
+    "start",
+    "shutdown"
+]
+
+
+class ServerNotInitializedError(Exception):
     """
-    Abstract base class that sets up a selector and listening socket
-    and accepts connections through the socket using the selector.
+    Thrown when an operation that requires a running IPC server is attempted,
+    but no server is running.
     """
-
-    def __init__(self,
-            selector_factory: Callable[[], selectors.BaseSelector],
-            listener_factory: Callable[[], socket.socket]):
-        self.selector = selector_factory()
-        self.listener = listener_factory()
-        self.selector.register(self.listener, selectors.EVENT_READ, self.accept)
-
-        self.shutdown_event = Event()
-        def select_loop():
-            while not self.shutdown_event.is_set():
-                readies = self.selector.select(timeout=1)
-                for key, _ in readies:
-                    callback = key.data
-                    try:
-                        callback(key.fileobj)
-                    except Exception:
-                        import traceback
-                        traceback.print_exc()
-        self.select_loop = Thread(target=select_loop, daemon=True)
-
-    @abstractmethod
-    def accept(self, listener):
-        ...
-
-    def start(self):
-        self.select_loop.start()
-
-    def shutdown(self):
-        self.shutdown_event.set()
-        self.select_loop.join()
-        self.selector.close()
-        self.listener.close()
-
-    def await_shutdown(self):
-        self.shutdown_event.wait()
+    pass
 
 
 # We will assign an IPCServer instance to this to keep the obj alive.
 _server = None
 server_address: Optional[bytes] = None
+export("server_address")
 
 ENVIRON_KEY = "SERVCOM_IPC_ADDR"
+
+_CONTROL_GROUP = f"{__name__}:control"
 
 
 class MsgGroupStorage:
@@ -87,6 +88,8 @@ class MsgGroupStorage:
         self.groups[conn] = group
 
     def remove_conn(self, conn):
+        if conn not in self.groups.keys():
+            return
         group = self.groups[conn]
         self.conns[group].remove(conn)
         del self.groups[conn]
@@ -94,74 +97,68 @@ class MsgGroupStorage:
 
 class IPCServer(AbstractSocketServer):
     def __init__(self):
-        super().__init__(selectors.DefaultSelector, create_listener)
+        super().__init__()
         self.mg_store = MsgGroupStorage()
+
+        @thread_target(daemon=True)
+        def shutdown_listener():
+            with join_group(_CONTROL_GROUP) as control:
+                while not self.shutdown_event.is_set():
+                    cmd = recv(control)
+                    if cmd == "shutdown":
+                        self.shutdown()
+                        break
+        self.shutdown_listener = shutdown_listener
+
+
+    @override
+    def start(self):
+        super().start()
+        self.shutdown_listener.start()
 
 
     @override
     def accept(self, listener):
-        # Only called when ready as determined by selector.
-        try:
-            conn, _ = listener.accept()
-        except OSError:
-            return
+        client = super().accept(listener)
 
-        try:
-            # Blocking here is okay:
-            # we expect new connections to immediately send the first message
-            # identifying the intended group.
-            group = recv(conn)
-        except EOFError:
-            return
+        # Blocking here is okay:
+        # we expect new connections to immediately send the first message
+        # identifying the intended group.
+        group = recv(client)
 
-        self.mg_store.add_conn(conn, group)
-        self.selector.register(conn, selectors.EVENT_READ, self.new_message)
+        client.setblocking(False)
+
+        self.mg_store.add_conn(client, group)
+        self.selector_loop.register(client, EVENT_READ, self.new_message)
 
 
     def new_message(self, sock):
-        # Only called when ready as determined by selector.
         try:
             msg = recv_raw(sock)
         except (EOFError, ConnectionError):
+            self.selector_loop.unregister(sock)
             sock.close()
-            self.selector.unregister(sock)
             self.mg_store.remove_conn(sock)
             return
 
         group = self.mg_store.groups[sock]
-        for c in self.mg_store.conns[group]:
+        members = list(self.mg_store.conns[group])
+        # Copy to avoid concurrent modification.
+        for c in members:
             if c == sock:
                 continue
             try:
                 send_raw(c, msg)
-            except (EOFError, ConnectionError, BlockingIOError):
-                # connection closed or
+            except (OSError, ConnectionError, BlockingIOError):
+                # connection failed or
                 # too many messages on that connection not being read
                 # TODO don't close if there is still data for us to read
+                self.selector_loop.unregister(sock)
                 sock.close()
-                self.selector.unregister(sock)
                 self.mg_store.remove_conn(c)
 
 
-    @override
-    def await_shutdown(self):
-        def await_parent_death():
-            while not self.shutdown_event.wait(1):
-                if os.getppid() == 1:
-                    # sends shutdown command to self; recv has no timeout
-                    shutdown()
-        Thread(target=await_parent_death, daemon=True).start()
-
-        # TODO correct shutdown should not depend on await_shutdown being called
-        with join_group("CONTROL") as control:
-            while True:
-                msg = recv(control)
-                if msg == "shutdown":
-                    send(control, "ack_shutdown")
-                    break
-        self.shutdown()
-
-
+@export
 def join_group(msg_group: str) -> socket.socket:
     """
     Joins a message group.
@@ -177,42 +174,11 @@ def join_group(msg_group: str) -> socket.socket:
     (and discard if uninterested) in a timely manner:
     the IPC server will close the socket if it cannot send through it.
     """
-    assert server_address is not None
+    if server_address is None:
+        raise ServerNotInitializedError
     s = connect(server_address)
     send(s, msg_group)
     return s
-
-
-#def establish_direct(key: str) -> socket.socket:  # TODO
-#    """
-#    Establishes a direct connection with another process that called
-#    with the same key.
-#    """
-#    from enum import IntEnum, auto
-#
-#    s = join_group(f"EST_DIRECT_{key}")
-#
-#    received_msgs = queue.SimpleQueue()
-#    selector = selectors.DefaultSelector()
-#    selector.register(s, selectors.EVENT_READ)
-#    sel_loop_stop = Event()
-#    def selector_loop():
-#        while not sel_loop_stop.is_set():
-#            selector.select(timeout=1)
-#
-#    class State(IntEnum):
-#        LISTENING       = auto()
-#        CANDIDATE_FOUND = auto()
-#        DONE            = auto()
-#
-#    state = State.LISTENING
-#    while True:
-#        if state is State.LISTENING:
-#            send(s, os.getpid())
-#        if state is State.DONE:
-#            selector.close()
-#            s.close()
-#            break
 
 
 import base64
@@ -223,6 +189,7 @@ def b64decode(s: str) -> bytes:
     return base64.b64decode(s)
 
 
+@export
 def setup(address=None):
     """
     Sets up the IPC module.
@@ -231,7 +198,7 @@ def setup(address=None):
     its value is used as the address of the IPC server to connect to.
     If an address is specified by the parameter,
     the argument overrides the environment variable.
-    Otherwise, a RuntimeError is raised.
+    Otherwise, ServerNotInitializedError is raised.
 
     This function is idempotent.
     """
@@ -246,31 +213,35 @@ def setup(address=None):
         server_address = address
 
     if server_address is None or len(server_address) == 0:
-        raise RuntimeError("no IPC server running")
+        raise ServerNotInitializedError
 
 
+@export
 def start() -> int:
     """
     Starts a new IPC server process and exports its address to the environment.
     Returns the PID of the server process.
     """
+    logger.info("starting IPC")
+
     from subprocess import Popen, PIPE
+    from sys import stderr
 
     entry = __name__.removesuffix(".ipc")  # use parent module as entry point
-    proc = Popen([sys.executable, "-m", entry], stdout=PIPE)
+    proc = Popen([sys.executable, "-m", entry], stdout=PIPE, stderr=stderr)
 
     os.environ[ENVIRON_KEY] = b64encode(proc.stdout.read())
     setup()
 
+    logger.info("IPC ready")
     return proc.pid
 
 
+@export
 def shutdown():
     try:
-        with join_group("CONTROL") as c:
+        with join_group(_CONTROL_GROUP) as c:
             send(c, "shutdown")
-            while recv(c) != "ack_shutdown":
-                pass
     except ConnectionRefusedError:
         # was not running
         pass
@@ -304,16 +275,28 @@ def _spawn_proc():
     Initialization for new server process.
     """
     from signal import signal, SIGINT, SIG_IGN
-    from sys import stdout
 
     global _server, server_address
     _server = IPCServer()
     server_address = _server.listener.getsockname()
 
-    signal(SIGINT, SIG_IGN)  # we want to be shutdown explicitly by parent
+    # we want to be shutdown explicitly by parent or parent death
+    signal(SIGINT, SIG_IGN)
 
+    @thread_target
+    def await_parent_death():
+        import os
+        while not _server.shutdown_event.wait(1):
+            if os.getppid() == 1:
+                _server.shutdown()
+                break
+    await_parent_death.start()
+
+    logger.debug("staring IPC server")
     _server.start()
+    logger.debug("IPC server started")
 
+    from sys import stdout
     # The popen on the other end blocks until EOF or termination,
     # which is why we need to close stdout
     # (stdout.close() doesn't close the underlying fd).

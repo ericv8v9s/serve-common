@@ -1,210 +1,80 @@
-from typing import Callable, Any
-from socket import socket
 from overrides import override
 
 import queue
 from queue import SimpleQueue
-from concurrent.futures import Executor, Future
-from threading import RLock, Event, Condition, Thread
-from selectors import EVENT_READ, DefaultSelector
-import pickle
-from functools import partial
-from dataclasses import dataclass
-from enum import IntEnum, auto
+from threading import Event
+from selectors import EVENT_READ
 import os
 import logging
 from traceback import print_exc
 
-from serve_common import ipc
-from serve_common.ipc.ipc import AbstractSocketServer
-from serve_common import compute
 from serve_common.ipc.sockutil import *
+from serve_common.ipc.selectors import *
+from serve_common.compute.executor import *
+from serve_common.threads import thread_target
 from serve_common.export import *
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "PoolWorker",
+    "run_process_pool"
+]
+
 
 @export
-def identity(*args, **kwargs):
+class PoolWorker:
     """
-    Returns all arguments unchanged as a tuple of (args, kwargs).
-    Useful for submitting tasks to workers that
-    have the actual computation function defined internally.
+    Base worker that does no initialization
+    and simply runs each task and returns the result.
     """
-    return args, kwargs
+    def pre_fork(self):
+        pass
+
+    def post_fork(self):
+        pass
+
+    def run_task(self, task):
+        return task()
 
 
-def _connect_pool_manager(pool_id: str, timeout: float=None) -> socket:
-    from time import sleep, monotonic
-    if timeout is not None:
-        end = monotonic() + timeout
+class PoolWorkerManager(ExecutorWorker):
+    """
+    A worker that manages a process pool of sub-workers.
 
-    retries = 3
-    retries_left = 0
-    delay = 10 / 1000  # 10 ms
+    There are three "actors" at play during the operation of this class:
+    the ExecutorServer, the manager (this class), and the pool worker
+    (not to be confused with ExecutorWorker).
+    The server manages connections with clients and job tracking as usual,
+    within which the submitted tasks are assigned to this manager
+    (an instance of ExecutorWorker),
+    who further delegates them to the workers in the process pool it manages.
+    """
 
-    # The PoolManager's advertiser is always listening on this group
-    # and replying any inquiries with the manager's address.
-    address = None
-    with ipc.join_group(f"{__name__}:{pool_id}") as group:
-        group.setblocking(False)
-        while timeout is None or monotonic() < end:
-            if retries_left <= 0:
-                send(group, "where")
-                retries_left = retries
-            try:
-                address = recv(group)
-                # address are bytes, commands are str
-                if isinstance(address, bytes):
-                    break
-                else:
-                    address = None
-            except BlockingIOError:
-                retries_left -= 1
-                sleep(delay)
-
-    if address is None:
-        raise TimeoutError()
-
-    return connect(address)
-
-
-@dataclass
-class Message:
-    class Type(IntEnum):
-        CONTROL = auto()
-        ERROR   = auto()
-        DATA    = auto()
-    type: Type
-    data: Any
-
-    def __hash__(self):
-        return hash((self.type, self.data))
-
-
-@dataclass
-class Job:
-    id: int
-    task: Callable
-
-    def __hash__(self):
-        return hash((self.id, self.task))
-
-
-@export
-class ProcessPoolClient(Executor):
-    def __init__(self, pool_id: str):
-        # connect to pool manager
-        self.conn_lock = RLock()
-        self.connection = _connect_pool_manager(pool_id)
-        # first message will tell us how to generate job id's
-        init_msg = recv(self.connection)
-        if init_msg.type is Message.Type.ERROR:
-            self.connection.close()
-            raise RuntimeError(init_msg.data)
-
-        self.job_id_lock = RLock()
-        self.next_job_id, self.id_step = init_msg.data
-
-        self.pool_id = pool_id
-        self.shutdown_event = Event()
-
-        self.jobs_lock = Condition()
-        self.pending_jobs = {}  # job id -> Future
-
-        def retrieve():
-            while not self.shutdown_event.is_set():
-                with self.jobs_lock:
-                    # regularly checks for shutdown
-                    if not self.jobs_lock.wait_for(
-                            lambda: len(self.pending_jobs) > 0,
-                            timeout=50/1000):
-                        continue
-
-                try:
-                    resp = recv(self.connection)
-                    is_error = resp.type == Message.Type.ERROR
-                    job_id, result = resp.data
-
-                    with self.jobs_lock:
-                        future = self.pending_jobs.pop(job_id)
-                    if is_error:
-                        future.set_exception(
-                                RuntimeError(f"Error in worker:\n{result}"))
-                    else:
-                        future.set_result(result)
-                except EOFError:
-                    if self.shutdown_event.is_set():
-                        break
-                    print_exc()
-                except Exception:
-                    print_exc()
-        self.retriever = Thread(target=retrieve, daemon=True)
-        self.retriever.start()
-
-
-    def gen_next_job_id(self) -> int:
-        with self.job_id_lock:
-            job_id = self.next_job_id
-            self.next_job_id += self.id_step
-            return job_id
-
-
-    @override
-    def submit(self, fn, /, *args, **kwargs) -> Future:
-        if self.shutdown_event.is_set():
-            raise RuntimeError("executor has shutdown")
-
-        job_id = self.gen_next_job_id()
-        data = pickle.dumps(Message(
-                Message.Type.DATA,
-                Job(job_id, partial(fn, *args, **kwargs))))
-
-        future = Future()
-        # we do not support cancellation
-        future.set_running_or_notify_cancel()
-
-        with self.jobs_lock:
-            self.pending_jobs[job_id] = future
-            self.jobs_lock.notify()
-        with self.conn_lock:
-            send_raw(self.connection, data)
-        return future
-
-
-    @override
-    def shutdown(self, wait=True, *, cancel_futures=False):
-        self.shutdown_event.set()
-        self.connection.close()
-        if wait:
-            self.retriever.join()
-
-
-@export
-class PoolManager(AbstractSocketServer):
-    MAX_CLIENTS = 256
-    """Maximum total number of clients (current and disconnected)."""
-    # This is to ensure every client can generate unique job id's.
-
-
-    def __init__(self, pool_id: str, pool_size: int, worker: "Worker"):
-        super().__init__(DefaultSelector, create_listener)
-        self.pool_id = pool_id
+    def __init__(self, pool_size: int, worker: PoolWorker):
+        super().__init__()
         self.pool_size = pool_size
         self.worker = worker
+        self.shutdown_event = Event()
 
-        # Advertise the server's address to anyone asking in the group.
-        self.advert_group = ipc.join_group(f"{__name__}:{pool_id}")
-        self.selector.register(self.advert_group, EVENT_READ, self._on_inquiry)
 
-        self.client_counter = 0
-        self.clients = set()  # connected client sockets
-        self.waiting_clients = {}  # Job -> client
+    @override
+    def setup(self, send_result):
+        logger.debug("setting up worker pool")
 
+        self.send_result = send_result
+
+        # idle_workers are populated as workers are forked.
+        # Whenever jobs are assigned to us (added to pending_jobs),
+        # an idle worker is removed from the queue
+        # and the job delegated to it.
         self.idle_workers = SimpleQueue()  # worker sockets
         self.pending_jobs = SimpleQueue()  # Job
         self.active_jobs = {}  # worker -> Job
 
+        # The scheduler waits for a worker and a job.
+        # When both are ready, it sends the job to the worker.
+        @thread_target
         def scheduler():
             worker = job = None
             while not self.shutdown_event.is_set():
@@ -221,100 +91,36 @@ class PoolManager(AbstractSocketServer):
                 send(worker, job.task)
 
                 worker = job = None
-        self.scheduler = Thread(target=scheduler, daemon=True)
+        self.scheduler = scheduler
+
+        # prep and fork workers
+        logger.debug("preparing workers")
+        self.worker.pre_fork()
+        for _ in range(self.pool_size):
+            self.start_worker()
+        logger.debug("worker pool populated")
+
+        self.scheduler.start()
+
+        # The selector is responsible for awaiting the results from workers.
+        self.selector_loop = SelectorRunner(do_callback_on_ready)
+        self.selector_loop.start()
+
+        logger.info("worker pool ready")
 
 
-    def add_client(self, fd):
-        self.client_counter += 1
-        self.clients.add(fd)
-        self.selector.register(fd, EVENT_READ, self._on_submit)
-
-    def remove_client(self, fd):
-        self.clients.remove(fd)
-        self.selector.unregister(fd)
-        fd.close()
+    @override
+    def assign(self, job: Job):
+        self.pending_jobs.put(job)
 
 
     def register_worker(self, fd):
         self.idle_workers.put(fd)
-        self.selector.register(fd, EVENT_READ, self._on_completion)
+        self.selector_loop.register(fd, EVENT_READ, self._on_completion)
 
     def unregister_worker(self, fd):
-        self.selector.unregister(fd)
+        self.selector_loop.unregister(fd)
         fd.close()
-
-
-    def _on_inquiry(self, group):
-        try:
-            msg = recv(group)
-        except EOFError:
-            return
-        if msg == "where":
-            send(group, self.listener.getsockname())
-
-
-    @override
-    def accept(self, listener):
-        # A new client has connected.
-        # We try to assign a "client id" to it,
-        # which is used by the client to generate job id's.
-        # If we ran out of client id's, we reject the client.
-
-        client = None
-        try:
-            client, _ = listener.accept()
-
-            if self.client_counter >= self.MAX_CLIENTS:
-                send(client, Message(
-                        Message.Type.ERROR,
-                       f"Exceeding maximum number of clients ({self.MAX_CLIENTS})"))
-                client.close()
-                return
-
-            send(client, Message(
-                    Message.Type.DATA,
-                    (self.client_counter, self.MAX_CLIENTS)))
-            self.add_client(client)
-        except OSError:
-            if client is not None:
-                client.close()
-
-
-    def _on_submit(self, client):
-        # The client is submitting a task.
-        try:
-            job = recv(client).data
-            self.waiting_clients[job] = client
-            self.pending_jobs.put(job)
-        except (OSError, EOFError):
-            self.remove_client(client)
-            return
-
-
-    def _on_completion(self, worker):
-        try:
-            answer = recv(worker)
-        except OSError:
-            # should never happen
-            print_exc()
-            self.unregister_worker(worker)
-            return
-        except EOFError:
-            # peer closed => abnormal worker shutdown
-            # (normal shutdown won't trigger this call at all)
-            self.unregister_worker(worker)
-            return
-
-        # return worker back for more jobs
-        self.idle_workers.put(worker)
-
-        job = self.active_jobs.pop(worker)
-        client = self.waiting_clients.pop(job)
-
-        try:
-            send(client, Message(answer.type, (job.id, answer.data)))
-        except OSError:
-            self.remove_client(client)
 
 
     def start_worker(self):
@@ -333,16 +139,15 @@ class PoolManager(AbstractSocketServer):
             while True:
                 try:
                     task = recv(sc)
+                    # Payload of Job, can by any type.
+                    # This allows specialized workers to accept only arguments.
                 except EOFError:
                     # shutdown
                     break
 
-                result_type = Message.Type.DATA
-                try:
-                    result = self.worker.run_task(task)
-                except Exception as e:
-                    result = e
-                    result_type = Message.Type.ERROR
+                error, result = run_safely(lambda: self.worker.run_task(task))
+                result_type = Message.Type.ERROR if error \
+                        else Message.Type.DATA
                 send(sc, Message(result_type, result))
         except:
             print_exc()
@@ -352,46 +157,46 @@ class PoolManager(AbstractSocketServer):
         os._exit(0)
 
 
-    @override
-    def start(self):
-        self.worker.pre_fork()
-        for _ in range(self.pool_size):
-            self.start_worker()
+    def _on_completion(self, worker):
+        """
+        Invoked when a worker has produced a result.
+        """
+        try:
+            answer = recv(worker)
+        except OSError:
+            # should never happen
+            print_exc()
+            self.unregister_worker(worker)
+            return
+        except EOFError:
+            # peer closed => abnormal worker shutdown
+            # (normal shutdown won't trigger this call at all)
+            self.unregister_worker(worker)
+            return
 
-        super().start()
-        self.scheduler.start()
+        # return worker back for more jobs
+        self.idle_workers.put(worker)
+
+        job = self.active_jobs.pop(worker)
+        self.send_result(Result(
+                job.id,
+                answer.data,
+                answer.type == Message.Type.DATA))
 
 
     @override
     def shutdown(self):
-        super().shutdown()
-        self.advert_group.close()
+        self.selector_loop.stop()
+        self.shutdown_event.set()
         self.scheduler.join()
 
 
 @export
-class Worker:
+def run_process_pool(pool_id: str, pool_size: int, worker: PoolWorker = None):
     """
-    Base worker that does no initialization
-    and simply runs each task and returns the result.
+    Starts an ExecutorServer backed by a process pool
+    and runs it until shutdown.
+
+    This is usually used in combination with compute.spawn_process.
     """
-    def pre_fork(self):
-        pass
-
-    def post_fork(self):
-        pass
-
-    def run_task(self, task):
-        return task()
-
-
-@export
-def process_pool(pool_id: str, pool_size: int, worker: Worker = None):
-    if ipc.ipc.server_address is None:
-        raise RuntimeError("IPC not setup (forgot to call ipc.setup()?)")
-    if worker is None:
-        worker = Worker()
-    manager = PoolManager(pool_id, pool_size, worker)
-    manager.start()
-    compute.event_shutdown.wait()
-    manager.shutdown()
+    run_executor(ExecutorServer, pool_id, PoolWorkerManager(pool_size, worker))

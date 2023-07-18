@@ -8,9 +8,21 @@ from socket import (
     AF_UNIX,
     SOCK_SEQPACKET,
     SOCK_CLOEXEC,
-    MSG_PEEK)
+    MSG_PEEK,
+    MSG_WAITALL)
 
 from serve_common.export import *
+
+__all__ = [
+    "socketpair",
+    "create_listener",
+    "connect",
+    "BadIPCMessageFormat",
+    "send_raw",
+    "send",
+    "recv_raw",
+    "recv"
+]
 
 
 FAMILY = AF_UNIX
@@ -26,9 +38,9 @@ def socketpair(family=FAMILY, type=TYPE, proto=0):
 
 
 @export
-def create_listener(addr=""):
-    l = socket.socket(FAMILY, TYPE)
-    l.bind(addr)  # autobind (see unix(7))
+def create_listener(family=FAMILY, sktype=TYPE, address=""):
+    l = socket.socket(family, sktype)
+    l.bind(address)  # autobind (see unix(7))
     l.listen()
     return l
 
@@ -79,3 +91,17 @@ def recv_raw(sock) -> bytes:
 @export
 def recv(sock) -> Any:
     return pickle.loads(recv_raw(sock))
+
+
+def recv_all(sock, n) -> bytes:
+    """
+    ``recv`` exactly ``n`` bytes, wait if necessary.
+
+    If the socket is set to be non-blocking,
+    it should be changed to blocking mode before being passed to this function.
+    """
+
+    buf = b""
+    while len(buf) < n:
+        buf += sock.recv(n, MSG_WAITALL)
+    return buf

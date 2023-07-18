@@ -17,28 +17,20 @@ import logging
 
 
 format = (
-    "[%(asctime)s] [%(process)d] [%(levelname)s] %(request_id)s"
-    "%(name)s: %(message)s")
+    "[{asctime}] [{levelname:<8}] [{processName}({process})] {request_id}"
+    "{name}: {message}")
+datefmt = "%Y-%m-%d %H:%M:%S %z"
 
 
 # https://docs.python.org/3/library/logging.config.html#logging-config-dictschema
-def setup(*,
-        app_name="app",
-        level: Union[int, str] = logging.INFO):
-    """
-    Sets up a default logging configuration (see source for config dict).
-    The app_name is used as a logger name;
-    commonly this should be the root module name of your project.
-    """
-
-    import logging.config
-
-    config = {
+def get_default_config():
+    return {
         "version": 1,
         "formatters": {
             "serve_common_default_formatter": {
                 "format": format,
-                "datefmt": "%Y-%m-%d %H:%M:%S %z"
+                "datefmt": datefmt,
+                "style": "{"
             }
         },
         # A filter that injects request id's.
@@ -56,17 +48,45 @@ def setup(*,
                 "filters": ["request_id_injector"]
             }
         },
-        "loggers": {
-            app_name: {
-                "level": level,
-                "handlers": ["serve_common_default_handler"]
-            },
-            "serve_common": {
-                "level": level,
-                "handlers": ["serve_common_default_handler"]
-            }
-        },
         "disable_existing_loggers": False
     }
-    logging.config.dictConfig(config)
 
+
+def setup_loggers(loggers: dict):
+    """
+    Sets up a default logging configuration (see source for config dict).
+    The provided loggers dict is inserted as the value of the "loggers" key
+    of the configuration dict after processing.
+
+    The provided loggers dict goes through the following processing:
+    first, a default configuration for the "serve_common" logger is added
+    if said key is absent;
+    next, each logger is added a default handler that logs to stderr
+    if no "handlers" is specified;
+    lastly, loggers with the value None are removed
+    (this can be used to disable default loggers
+    e.g. mapping "serve_common" to None).
+    """
+
+    import logging.config
+
+    # add default serve_common logger
+    if "serve_common" not in loggers:
+        loggers["serve_common"] = {}
+
+    # insert default handlers
+    for logger in loggers.values():
+        if logger is None:
+            continue
+        if "handlers" not in logger:
+            logger["handlers"] = ["serve_common_default_handler"]
+
+    # prune None's
+    for k, v in list(loggers.items()):
+        if v is None:
+            del loggers[k]
+
+    config = get_default_config()
+    config["loggers"] = loggers
+
+    logging.config.dictConfig(config)

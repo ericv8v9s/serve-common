@@ -9,14 +9,21 @@ import threading
 from functools import partial
 from inspect import signature, Parameter
 
+from serve_common.threads import *
 from serve_common.export import *
 
+__all__ = [
+    "Chain",
+    "set_process_name",
+    "spawn_process",
+    "event_shutdown",
+    "SHUTDOWN_SIGNALS",
+    "exit_on_signals",
+    "exit_on_parent_death"
+]
 
-#def pdebug(msg, **kws):
-#    import os
-#    import sys
-#    kws.setdefault("file", sys.stderr)
-#    print(f"DEBUG [{os.getpid()}] {msg}", **kws)
+import logging
+logger = logging.getLogger(__name__)
 
 
 @export
@@ -57,6 +64,13 @@ class Chain:
     def __call__(self):
         for target in self.targets:
             target()
+
+
+@export
+def set_process_name(name: str):
+    """Sets the current process's name."""
+    import multiprocessing as mp
+    mp.current_process().name = name
 
 
 @export
@@ -111,10 +125,11 @@ def exit_on_parent_death():
     """
     Sets event_shutdown when the parent process dies.
     """
+    @thread_target(daemon=True)
     def wait_parent_death():
         while True:
             if event_shutdown.wait(1):
                 break
             if os.getppid() == 1:  # adopted by init
                 event_shutdown.set()
-    threading.Thread(target=wait_parent_death, daemon=True).start()
+    wait_parent_death.start()

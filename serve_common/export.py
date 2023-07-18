@@ -1,12 +1,8 @@
-"""
-Decorators that manipulate __all__ in the caller's global namespace.
-"""
-
+from typing import TypeVar
 import inspect
 
 
 __all__ = [
-    "export_as",
     "export"
 ]
 
@@ -22,24 +18,32 @@ def _export_name(ident: str, stack_depth=2):
         try:
             __all__ = frame.f_globals["__all__"]
         except KeyError:
-            __all__ = []
-            frame.f_globals["__all__"] = __all__
+            module = frame.f_globals["__name__"]
+            raise RuntimeError(f"{module}.__all__ not declared")
 
-        __all__.append(ident)
+        if ident not in __all__:
+            module = frame.f_globals["__name__"]
+            raise RuntimeError(f"exported name not in __all__: {module}.{ident}")
 
     finally:
         del frame
 
 
-def export_as(ident: str):
-    _export_name(ident)
-    return lambda x: x
+T = TypeVar('T')
+def export(obj: T) -> T:
+    """
+    Marks this object as exported:
+    checks ``__all__`` for an entry with the name of this object,
+    and raises an error if such an entry is missing.
 
+    If the object is a str, it is checked for as is;
+    otherwise, its name from ``__name__`` is used.
 
-def export(obj):
+    The object is returned untouched.
+    """
+
     if isinstance(obj, str):
         _export_name(obj)
     else:
         _export_name(obj.__name__)
     return obj
-

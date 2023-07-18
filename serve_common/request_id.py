@@ -2,6 +2,7 @@ from uuid import uuid4
 import threading
 
 
+# TODO consider context var
 context = threading.local()  # gevent also monkeypatches this
 def get():
     return getattr(context, "request_id", None)
