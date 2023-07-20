@@ -163,7 +163,7 @@ def register(event: Union[str, re.Pattern],
 @export
 def notify(event: str, data=()):
     if not isinstance(data, tuple):
-        raise TypeError()
+        raise TypeError(f"{data} is not a tuple")
     event_queue.put((event, data))
     if _ipc_conn is not None:
         ipc.send(_ipc_conn, (event, data))
