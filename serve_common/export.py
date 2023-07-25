@@ -1,5 +1,5 @@
 """
-Decorators that manipulate __all__ in the caller's global namespace.
+Decorators that manipulate ``__all__`` in the caller's global namespace.
 """
 
 import inspect

@@ -40,7 +40,7 @@ class OpenAPISpec:
         resp=spectree.Response(HTTP_200=OpenAPISpecJson),
         skip_validation=True)
     def on_get(self, req, resp):
-        """Generates a Open API specification JSON document."""
+        """Generates an Open API specification JSON document."""
         resp.media = spec.spec
 
 

@@ -9,7 +9,10 @@ __all__ = [
 
 
 def cached(property_or_method):
-    """Apply on top of @property or getter method to cache the property."""
+    """
+    Apply on top of @property or getter method to cache the property.
+    The decorated object supports ``setter`` and ``deleter``.
+    """
 
     if isinstance(property_or_method, property):
         return _CachedProperty(property_or_method)
@@ -83,6 +86,8 @@ def enable_cache_dependency(cls):
     """
     Sets up @cached properties in a class to allow automatic cache clearing
     based on declared dependency relations.
+
+    This is optional if the decorated class does not use ``@dependency``.
     """
 
     # Reverse dependency references such that
@@ -115,6 +120,17 @@ def enable_cache_dependency(cls):
 
 
 def dependency(*properties: Union[property, _CachedProperty, str]):
+    """
+    Marks a cached property to be dependent on the listed properties.
+    A property will have its cache invalidated
+    when any of its dependencies have it cache invalidated.
+    The dependencies can be specified as regular properties, cached properties,
+    or string field names
+    (useful when the target is declared later in the class).
+
+    The class must be decorated with ``@enable_cache_dependency``
+    for dependencies to work.
+    """
     dep_names = set()
     for p in properties:
         if isinstance(p, _CachedProperty):
