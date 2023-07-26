@@ -3,6 +3,15 @@
 This is a library for writing web services.
 It's a collection of modules written during the development of other projects.
 
+**A note on the state of the project:**
+This project is in the middle of a major refactoring / rewrite.
+You can find the work-in-progress in the dev branch.
+Some modules see extensive change in the new version
+(`serve_common.ipc` and `serve_common.export`, among others),
+and there are major additions not documented here
+(`serve_common.compute`,
+which starts process based workers based on the IPC module).
+
 
 ## Modules
 
@@ -271,6 +280,7 @@ to time and log a block or function.
 @time_and_log("running f")
 def f(x):
     return 2 * x
+f(42)
 # running f: 1506 ns
 
 with time_and_log("sleeping"):
