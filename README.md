@@ -214,7 +214,7 @@ and uses it to establish communication with the the same server.
 
 Because this initialization is based on an environment variable,
 `start` should be invoked before any child processes are started,
-and therefore should happend early in the application startup.
+and therefore should happen early in the application startup.
 For gunicorn applications,
 you may want to consider a two stage startup
 that first runs a plain Python application to start the IPC server
